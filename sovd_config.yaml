@@ -1,0 +1,63 @@
+base_uri: https://vehicle.example.com
+endpoints:
+  list_apps:
+    path_template: /apps
+    method: GET
+    description: List all available applications
+  get_capabilities:
+    path_template: /capabilities
+    method: GET
+    description: Get system capabilities
+  read_sensor_data:
+    path_template: /apps/{app}/data/{datatype}
+    method: GET
+    description: Read sensor data from specified app/component
+  get_logs:
+    path_template: /components/{component}/logs
+    method: GET
+    description: Get logs from specified component
+  get_faults:
+    path_template: /components/diagnostics/faults
+    method: GET
+    description: Get diagnostic trouble codes and faults
+  get_ecu_status:
+    path_template: /components/{ecu}/status
+    method: GET
+    description: Get ECU status information
+  get_configurations:
+    path_template: /apps/{app}/configurations
+    method: GET
+    description: Get application configurations
+  get_operations:
+    path_template: /components/{component}/operations
+    method: GET
+    description: List available operations for component
+  security_access:
+    path_template: /security/access
+    method: POST
+    description: Request security access
+component_aliases:
+  engine:
+  - motor
+  - powerplant
+  - powertrain
+  transmission:
+  - gearbox
+  - trans
+  steering:
+  - powersteering
+  - steer
+  brakes:
+  - brake
+  - braking
+  suspension:
+  - susp
+  - shocks
+  battery:
+  - batt
+  - power
+  hvac:
+  - climate
+  - aircon
+  - heating
+  - cooling
