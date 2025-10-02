@@ -1,8 +1,19 @@
+# sovd_nlp_prototype.py
+
 import re
 import json
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
+
+# Phase 2: Import vehicle knowledge
+try:
+    from vehicle_knowledge import VehicleKnowledge
+    VEHICLE_KNOWLEDGE_AVAILABLE = True
+except ImportError:
+    VEHICLE_KNOWLEDGE_AVAILABLE = False
+    print("Warning: vehicle_knowledge module not available. Entity resolution disabled.")
+
 
 @dataclass
 class SOVDRequest:
@@ -26,6 +37,7 @@ class SOVDRequest:
         
         return f"{self.method} {url} HTTP/1.1{headers_str}"
 
+
 class IntentType(Enum):
     """Types of diagnostic intents"""
     LIST_APPS = "list_apps"
@@ -38,17 +50,38 @@ class IntentType(Enum):
     GET_OPERATIONS = "get_operations"
     SECURITY_ACCESS = "security_access"
 
+
 @dataclass
 class Intent:
     """Parsed user intent"""
     type: IntentType
     entities: Dict[str, str] = None
 
+
 class SOVDNLPProcessor:
     """Natural Language Processor for SOVD API requests"""
     
-    def __init__(self):
+    def __init__(self, vehicle_knowledge: Optional['VehicleKnowledge'] = None):
+        """
+        Initialize NLP processor.
+        
+        Args:
+            vehicle_knowledge: Optional VehicleKnowledge instance for entity resolution.
+                             If None and module available, will create new instance.
+        """
         self.patterns = self._initialize_patterns()
+        
+        # Phase 2: Initialize vehicle knowledge if available
+        if vehicle_knowledge is not None:
+            self.vehicle_knowledge = vehicle_knowledge
+        elif VEHICLE_KNOWLEDGE_AVAILABLE:
+            try:
+                self.vehicle_knowledge = VehicleKnowledge()
+            except FileNotFoundError:
+                print("Warning: vehicle_model_snapshot.json not found. Entity resolution disabled.")
+                self.vehicle_knowledge = None
+        else:
+            self.vehicle_knowledge = None
         
     def _initialize_patterns(self) -> Dict[IntentType, List[Dict]]:
         """Initialize pattern matching rules for intent classification"""
@@ -64,15 +97,21 @@ class SOVDNLPProcessor:
             ],
             
             IntentType.READ_SENSOR_DATA: [
+                # IMPORTANT: Most specific patterns FIRST
+                {"pattern": r"\bget\s+(?P<component>\w+)\s+(?P<datatype>temperature|temp|voltage|pressure|rpm|speed)\b", "entities": {"component": "component", "datatype": "datatype"}},
+                {"pattern": r"\bshow\s+(?P<datatype>temperature|temp|voltage|pressure|rpm|speed)\s+(from\s+)?(?P<component>\w+)\b", "entities": {"component": "component", "datatype": "datatype"}},
                 {"pattern": r"\b(read|get|show)\s+(sensor\s+)?data\s+(from\s+)?(?P<component>\w+)\b", "entities": {"component": "component"}},
                 {"pattern": r"\bget\s+(?P<component>\w+)\s+(sensor\s+)?data\b", "entities": {"component": "component"}},
-                {"pattern": r"\bshow\s+(?P<datatype>\w+)\s+(from\s+)?(?P<component>\w+)\b", "entities": {"component": "component", "datatype": "datatype"}},
+                {"pattern": r"\bshow\s+(?P<component>\w+)\s+data\b", "entities": {"component": "component"}},
             ],
             
             IntentType.GET_LOGS: [
+                # IMPORTANT: Specific patterns with entity capture FIRST
+                {"pattern": r"\b(get|read|show|fetch)\s+(?P<component>\w+)\s+logs\b", "entities": {"component": "component"}},
+                {"pattern": r"\b(get|read|show|fetch)\s+logs\s+from\s+(?P<component>\w+)\b", "entities": {"component": "component"}},
+                # Generic patterns LAST (no entity capture)
                 {"pattern": r"\b(get|show|read|fetch)\s+(system\s+)?(logs|logging)\b", "entities": {}},
                 {"pattern": r"\bshow\s+me\s+the\s+logs\b", "entities": {}},
-                {"pattern": r"\b(get|read)\s+(?P<component>\w+)\s+logs\b", "entities": {"component": "component"}},
             ],
             
             IntentType.GET_FAULTS: [
@@ -103,14 +142,22 @@ class SOVDNLPProcessor:
             ],
         }
     
-    def parse_natural_language(self, text: str) -> Optional[Intent]:
-        """Parse natural language input and extract intent and entities"""
-        text = text.lower().strip()
+    def parse_natural_language(self, text: str, debug: bool = False) -> Optional[Intent]:
+        """
+        Parse natural language input and extract intent and entities.
         
+        Phase 2: Now includes entity resolution via vehicle knowledge.
+        """
+        text_lower = text.lower().strip()
+        
+        if debug:
+            print(f"Debug: Parsing '{text}'")
+        
+        # Regex pattern matching (existing logic)
         for intent_type, pattern_list in self.patterns.items():
             for pattern_dict in pattern_list:
                 try:
-                    match = re.search(pattern_dict["pattern"], text, re.IGNORECASE)
+                    match = re.search(pattern_dict["pattern"], text_lower, re.IGNORECASE)
                     if match:
                         entities = {}
                         # Extract named groups from regex
@@ -118,12 +165,96 @@ class SOVDNLPProcessor:
                             if group_name in match.groupdict() and match.group(group_name):
                                 entities[entity_name] = match.group(group_name)
                         
-                        return Intent(type=intent_type, entities=entities)
+                        intent = Intent(type=intent_type, entities=entities)
+                        
+                        if debug:
+                            print(f"Debug: Regex matched - Intent: {intent_type.value}, Entities: {entities}")
+                        
+                        # Phase 2: Resolve entities using vehicle knowledge
+                        if self.vehicle_knowledge:
+                            intent = self._resolve_entities(intent, text, debug)
+                        
+                        return intent
+                        
                 except Exception as e:
-                    print(f"Error processing pattern: {e}")
+                    if debug:
+                        print(f"Debug: Pattern error: {e}")
                     continue
         
+        if debug:
+            print("Debug: No pattern matched")
+        
         return None
+    
+    def _resolve_entities(self, intent: Intent, original_text: str, debug: bool = False) -> Intent:
+        """
+        Phase 2: Resolve and validate entities using vehicle knowledge.
+        
+        Enhances entities with:
+        - Resolved IDs (e.g., "camera" → "Camera")
+        - Entity type validation
+        - Additional metadata
+        """
+        if not intent.entities:
+            if debug:
+                print("Debug: No entities to resolve")
+            return intent
+        
+        resolved_entities = {}
+        
+        for entity_name, entity_value in intent.entities.items():
+            if debug:
+                print(f"Debug: Resolving entity '{entity_name}': '{entity_value}'")
+            
+            # Try to resolve based on entity type
+            if entity_name in ["component", "ecu"]:
+                resolved = self.vehicle_knowledge.find_component(entity_value)
+                if resolved:
+                    # Keep the original entity name (component/ecu) with resolved ID
+                    resolved_entities[entity_name] = resolved["id"]
+                    resolved_entities[f"{entity_name}_type"] = "component"
+                    resolved_entities[f"{entity_name}_info"] = resolved
+                    if debug:
+                        print(f"Debug: Resolved component: {entity_value} → {resolved['id']}")
+                else:
+                    # Keep original value if not resolved
+                    resolved_entities[entity_name] = entity_value
+                    if debug:
+                        print(f"Debug: Component '{entity_value}' not found in vehicle model")
+            
+            elif entity_name == "app":
+                resolved = self.vehicle_knowledge.find_app(entity_value)
+                if resolved:
+                    resolved_entities[entity_name] = resolved["id"]
+                    resolved_entities[f"{entity_name}_type"] = "app"
+                    resolved_entities[f"{entity_name}_info"] = resolved
+                    if debug:
+                        print(f"Debug: Resolved app: {entity_value} → {resolved['id']}")
+                else:
+                    resolved_entities[entity_name] = entity_value
+                    if debug:
+                        print(f"Debug: App '{entity_value}' not found in vehicle model")
+            
+            elif entity_name == "area":
+                resolved = self.vehicle_knowledge.find_area(entity_value)
+                if resolved:
+                    resolved_entities[entity_name] = resolved["id"]
+                    resolved_entities[f"{entity_name}_type"] = "area"
+                    resolved_entities[f"{entity_name}_info"] = resolved
+                    if debug:
+                        print(f"Debug: Resolved area: {entity_value} → {resolved['id']}")
+                else:
+                    resolved_entities[entity_name] = entity_value
+            
+            else:
+                # Pass through other entity types unchanged
+                resolved_entities[entity_name] = entity_value
+        
+        if debug:
+            print(f"Debug: Resolved entities: {resolved_entities}")
+        
+        intent.entities = resolved_entities
+        return intent
     
     def intent_to_sovd_request(self, intent: Intent) -> SOVDRequest:
         """Convert parsed intent to SOVD HTTP request"""
@@ -173,14 +304,20 @@ class SOVDNLPProcessor:
             return SOVDRequest(method="POST", endpoint=endpoint)
         
         else:
-            # Fallback - try to get general info
             return SOVDRequest(method="GET", endpoint="/capabilities")
+
 
 class SOVDAssistant:
     """Main assistant class that combines NLP processing with SOVD API generation"""
     
-    def __init__(self, base_uri: str = None, config_file: str = None):
-        self.nlp_processor = SOVDNLPProcessor()
+    def __init__(self, base_uri: str = None, config_file: str = None, vehicle_knowledge: Optional['VehicleKnowledge'] = None):
+        """
+        Initialize SOVD Assistant.
+        
+        Phase 2: Now accepts optional vehicle_knowledge parameter.
+        """
+        # Phase 2: Pass vehicle knowledge to NLP processor
+        self.nlp_processor = SOVDNLPProcessor(vehicle_knowledge=vehicle_knowledge)
         self.conversation_log = []
         
         # Load base_uri from config if available
@@ -208,25 +345,31 @@ class SOVDAssistant:
         if debug:
             print(f"Debug: Processing input: '{user_input}'")
         
-        # Parse the intent
-        intent = self.nlp_processor.parse_natural_language(user_input)
+        # Parse the intent (now with entity resolution)
+        intent = self.nlp_processor.parse_natural_language(user_input, debug=debug)
         
         if not intent:
+            # Phase 2: Enhanced error message with vehicle-aware suggestions
+            suggestions = self._generate_smart_suggestions(user_input)
+            
             return {
                 "success": False,
-                "message": "Could not understand request. Try asking about apps, capabilities, sensor data, logs, faults, or ECU status.",
-                "suggestions": [
-                    "List all apps",
-                    "Show capabilities", 
-                    "Get engine sensor data",
-                    "Read system logs",
-                    "Check for faults",
-                    "Get ECU status"
-                ]
+                "message": "Could not understand request.",
+                "suggestions": suggestions
             }
         
+        # Phase 2: Validate query if vehicle knowledge available
+        if self.nlp_processor.vehicle_knowledge:
+            is_valid, validation_msg = self._validate_query(intent)
+            if not is_valid:
+                return {
+                    "success": False,
+                    "message": f"Query validation failed: {validation_msg}",
+                    "suggestions": self._generate_alternative_suggestions(intent)
+                }
+        
         if debug:
-            print(f"Debug: Detected intent: {intent.type.value}, entities: {intent.entities}")
+            print(f"Debug: Final intent: {intent.type.value}, entities: {intent.entities}")
         
         # Convert to SOVD request
         sovd_request = self.nlp_processor.intent_to_sovd_request(intent)
@@ -250,6 +393,55 @@ class SOVDAssistant:
             "curl_command": self._generate_curl_command(sovd_request),
             "explanation": self._explain_request(intent, sovd_request)
         }
+    
+    def _validate_query(self, intent: Intent) -> Tuple[bool, str]:
+        """Phase 2: Validate query using vehicle knowledge"""
+        if not self.nlp_processor.vehicle_knowledge:
+            return True, ""
+        
+        return self.nlp_processor.vehicle_knowledge.validate_query(
+            intent.type.value,
+            intent.entities
+        )
+    
+    def _generate_smart_suggestions(self, user_input: str) -> List[str]:
+        """Phase 2: Generate vehicle-aware suggestions"""
+        suggestions = []
+        
+        # Check if vehicle knowledge is available
+        if self.nlp_processor.vehicle_knowledge:
+            words = user_input.lower().split()
+            
+            # Look for words that might be entities
+            for word in words:
+                if len(word) > 2:  # Skip short words
+                    similar = self.nlp_processor.vehicle_knowledge.suggest_similar(word, limit=2)
+                    if similar:
+                        suggestions.append(f"Did you mean: {', '.join(similar)}?")
+                        break  # Only suggest for first match
+        
+        # Add generic examples
+        suggestions.extend([
+            "List all apps",
+            "Show capabilities",
+            "Get V2X sensor data",
+            "Read system logs",
+            "Check for faults"
+        ])
+        
+        return suggestions[:5]  # Limit to 5 suggestions
+    
+    def _generate_alternative_suggestions(self, intent: Intent) -> List[str]:
+        """Phase 2: Suggest alternatives when validation fails"""
+        suggestions = []
+        
+        # Suggest based on intent type
+        if intent.type == IntentType.GET_LOGS:
+            suggestions.append("Try components that have apps with logs: V2X, GOLDBOX, Switch")
+        elif intent.type == IntentType.GET_OPERATIONS:
+            suggestions.append("Try apps with operations: IDSReporter, NIDS_Suricata, CANIDS")
+        
+        return suggestions
     
     def _generate_curl_command(self, request: SOVDRequest) -> str:
         """Generate curl command for the request"""
@@ -282,14 +474,13 @@ class SOVDAssistant:
         
         return explanations.get(intent.type, "This will perform the requested diagnostic operation")
 
-# Example usage and testing
+
 if __name__ == "__main__":
     assistant = SOVDAssistant()
     
-    # Test cases
     test_inputs = [
         "List all apps",
-        "Show me the capabilities", 
+        "Show me the capabilities",
         "Get engine sensor data",
         "Read PowerSteering logs",
         "Check for faults",
@@ -299,6 +490,9 @@ if __name__ == "__main__":
         "I need security access to the engine",
         "What can this vehicle do?",
         "Show me RearWindows data",
+        # Phase 2: Test with fuzzy matching
+        "get logs from v2x",
+        "show camera data",
     ]
     
     print("SOVD Natural Language to HTTP Request Processor")
@@ -306,16 +500,19 @@ if __name__ == "__main__":
     
     for test_input in test_inputs:
         print(f"\nInput: '{test_input}'")
-        result = assistant.process_request(test_input)
+        result = assistant.process_request(test_input, debug=False)
         
         if result["success"]:
             print(f"Intent: {result['intent']}")
             if result["entities"]:
                 print(f"Entities: {result['entities']}")
             print(f"HTTP Request:\n{result['http_request']}")
-            print(f"cURL: {result['curl_command']}")
             print(f"Explanation: {result['explanation']}")
         else:
             print(f"Error: {result['message']}")
+            if result.get("suggestions"):
+                print("Suggestions:")
+                for suggestion in result["suggestions"]:
+                    print(f"  - {suggestion}")
         
         print("-" * 30)
