@@ -1,12 +1,12 @@
 # sovd_nlp_prototype.py
+# Keyword-based NLP processor - simpler, more maintainable
+#!/usr/bin/env python3
 
-import re
 import json
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
-# Phase 2: Import vehicle knowledge
 try:
     from vehicle_knowledge import VehicleKnowledge
     VEHICLE_KNOWLEDGE_AVAILABLE = True
@@ -59,7 +59,10 @@ class Intent:
 
 
 class SOVDNLPProcessor:
-    """Natural Language Processor for SOVD API requests"""
+    """
+    Keyword-based Natural Language Processor for SOVD API requests.
+    Scans for keywords regardless of word order for simpler, more flexible parsing.
+    """
     
     def __init__(self, vehicle_knowledge: Optional['VehicleKnowledge'] = None):
         """
@@ -67,11 +70,8 @@ class SOVDNLPProcessor:
         
         Args:
             vehicle_knowledge: Optional VehicleKnowledge instance for entity resolution.
-                             If None and module available, will create new instance.
         """
-        self.patterns = self._initialize_patterns()
-        
-        # Phase 2: Initialize vehicle knowledge if available
+        # Initialize vehicle knowledge
         if vehicle_knowledge is not None:
             self.vehicle_knowledge = vehicle_knowledge
         elif VEHICLE_KNOWLEDGE_AVAILABLE:
@@ -83,178 +83,283 @@ class SOVDNLPProcessor:
         else:
             self.vehicle_knowledge = None
         
-    def _initialize_patterns(self) -> Dict[IntentType, List[Dict]]:
-        """Initialize pattern matching rules for intent classification"""
-        return {
-            IntentType.LIST_APPS: [
-                {"pattern": r"\b(list|show|get)\s+(all\s+)?(apps|applications)\b", "entities": {}},
-                {"pattern": r"\bwhat\s+apps\s+are\s+(available|running)\b", "entities": {}},
-            ],
-            
-            IntentType.GET_CAPABILITIES: [
-                {"pattern": r"\b(show|get|list)\s+capabilities\b", "entities": {}},
-                {"pattern": r"\bwhat\s+can\s+(this\s+)?(vehicle|system)\s+do\b", "entities": {}},
-            ],
-            
-            IntentType.READ_SENSOR_DATA: [
-                # IMPORTANT: Most specific patterns FIRST
-                {"pattern": r"\bget\s+(?P<component>\w+)\s+(?P<datatype>temperature|temp|voltage|pressure|rpm|speed)\b", "entities": {"component": "component", "datatype": "datatype"}},
-                {"pattern": r"\bshow\s+(?P<datatype>temperature|temp|voltage|pressure|rpm|speed)\s+(from\s+)?(?P<component>\w+)\b", "entities": {"component": "component", "datatype": "datatype"}},
-                {"pattern": r"\b(read|get|show)\s+(sensor\s+)?data\s+(from\s+)?(?P<component>\w+)\b", "entities": {"component": "component"}},
-                {"pattern": r"\bget\s+(?P<component>\w+)\s+(sensor\s+)?data\b", "entities": {"component": "component"}},
-                {"pattern": r"\bshow\s+(?P<component>\w+)\s+data\b", "entities": {"component": "component"}},
-            ],
-            
-            IntentType.GET_LOGS: [
-                # IMPORTANT: Specific patterns with entity capture FIRST
-                {"pattern": r"\b(get|read|show|fetch)\s+(?P<component>\w+)\s+logs\b", "entities": {"component": "component"}},
-                {"pattern": r"\b(get|read|show|fetch)\s+logs\s+from\s+(?P<component>\w+)\b", "entities": {"component": "component"}},
-                # Generic patterns LAST (no entity capture)
-                {"pattern": r"\b(get|show|read|fetch)\s+(system\s+)?(logs|logging)\b", "entities": {}},
-                {"pattern": r"\bshow\s+me\s+the\s+logs\b", "entities": {}},
-            ],
-            
-            IntentType.GET_FAULTS: [
-                {"pattern": r"\b(get|show|read|list)\s+(all\s+)?(faults|errors|DTCs?|trouble\s+codes?)\b", "entities": {}},
-                {"pattern": r"\bcheck\s+for\s+(faults|errors)\b", "entities": {}},
-                {"pattern": r"\bdiagnostic\s+trouble\s+codes?\b", "entities": {}},
-            ],
-            
-            IntentType.GET_ECU_STATUS: [
-                {"pattern": r"\b(get|check|show)\s+(ecu|ECU)\s+(status|health|info)\b", "entities": {}},
-                {"pattern": r"\bshow\s+(?P<ecu>\w+)\s+(ecu\s+)?status\b", "entities": {"ecu": "ecu"}},
-                {"pattern": r"\bhow\s+is\s+the\s+(?P<ecu>\w+)\s+(ecu\s+)?doing\b", "entities": {"ecu": "ecu"}},
-            ],
-            
-            IntentType.GET_CONFIGURATIONS: [
-                {"pattern": r"\b(get|show)\s+(?P<app>\w+)\s+config(uration)?s?\b", "entities": {"app": "app"}},
-                {"pattern": r"\bshow\s+settings\s+for\s+(?P<app>\w+)\b", "entities": {"app": "app"}},
-            ],
-            
-            IntentType.GET_OPERATIONS: [
-                {"pattern": r"\b(get|list|show)\s+(?P<component>\w+)\s+operations\b", "entities": {"component": "component"}},
-                {"pattern": r"\bwhat\s+can\s+(?P<component>\w+)\s+do\b", "entities": {"component": "component"}},
-            ],
-            
-            IntentType.SECURITY_ACCESS: [
-                {"pattern": r"\b(security\s+access|authenticate|login)\b", "entities": {}},
-                {"pattern": r"\bget\s+access\s+to\s+(?P<component>\w+)\b", "entities": {"component": "component"}},
-            ],
+        # Define keyword categories
+        self._initialize_keywords()
+    
+    def _initialize_keywords(self):
+        """Initialize keyword categories for parsing"""
+        
+        # Action verbs
+        self.action_verbs = {
+            "get": "get",
+            "show": "get",
+            "list": "list",
+            "read": "get",
+            "fetch": "get",
+            "retrieve": "get",
+            "display": "get",
+            "check": "get",
+        }
+        
+        # Data types (what to retrieve)
+        self.data_types = {
+            "logs": "logs",
+            "log": "logs",
+            "logging": "logs",
+            "data": "data",
+            "sensor": "data",
+            "status": "status",
+            "config": "configurations",
+            "configuration": "configurations",
+            "configurations": "configurations",
+            "settings": "configurations",
+            "operations": "operations",
+            "operation": "operations",
+            "faults": "faults",
+            "fault": "faults",
+            "errors": "faults",
+            "error": "faults",
+            "dtc": "faults",
+            "dtcs": "faults",
+            "codes": "faults",
+            "capabilities": "capabilities",
+            "capability": "capabilities",
+            "apps": "apps",
+            "applications": "apps",
+            "application": "apps",
+            "bulk-data": "bulk_data",
+            "bulk": "bulk_data",
+            "alerts": "bulk_data",
+            "alert": "bulk_data",
+            "rules": "bulk_data",
+        }
+        
+        # Special keywords
+        self.special_keywords = {
+            "security": "security_access",
+            "access": "security_access",
+            "authenticate": "security_access",
+            "login": "security_access",
+        }
+        
+        # Ignore words (stop words)
+        self.ignore_words = {
+            "the", "a", "an", "from", "to", "in", "on", "at", "for",
+            "me", "please", "i", "need", "want", "can", "you", "my",
+            "all", "any", "some", "this", "that", "these", "those"
         }
     
     def parse_natural_language(self, text: str, debug: bool = False) -> Optional[Intent]:
         """
-        Parse natural language input and extract intent and entities.
+        Parse natural language using keyword scanning.
+        Word order doesn't matter - scans for keywords in any position.
         
-        Phase 2: Now includes entity resolution via vehicle knowledge.
+        Args:
+            text: User input text
+            debug: Enable debug output
+        
+        Returns:
+            Intent with extracted entities, or None if unable to parse
         """
         text_lower = text.lower().strip()
+        tokens = text_lower.split()
         
         if debug:
             print(f"Debug: Parsing '{text}'")
+            print(f"Debug: Tokens: {tokens}")
         
-        # Regex pattern matching (existing logic)
-        for intent_type, pattern_list in self.patterns.items():
-            for pattern_dict in pattern_list:
-                try:
-                    match = re.search(pattern_dict["pattern"], text_lower, re.IGNORECASE)
-                    if match:
-                        entities = {}
-                        # Extract named groups from regex
-                        for entity_name, group_name in pattern_dict["entities"].items():
-                            if group_name in match.groupdict() and match.group(group_name):
-                                entities[entity_name] = match.group(group_name)
-                        
-                        intent = Intent(type=intent_type, entities=entities)
-                        
-                        if debug:
-                            print(f"Debug: Regex matched - Intent: {intent_type.value}, Entities: {entities}")
-                        
-                        # Phase 2: Resolve entities using vehicle knowledge
-                        if self.vehicle_knowledge:
-                            intent = self._resolve_entities(intent, text, debug)
-                        
-                        return intent
-                        
-                except Exception as e:
-                    if debug:
-                        print(f"Debug: Pattern error: {e}")
+        # Extract keywords
+        parsed = {
+            "action": None,
+            "data_type": None,
+            "component": None,
+            "app": None,
+            "area": None,
+            "ecu": None,
+            "special": None,
+        }
+        
+        # Scan for action verb
+        for token in tokens:
+            if token in self.action_verbs:
+                parsed["action"] = self.action_verbs[token]
+                if debug:
+                    print(f"Debug: Found action: {token} → {parsed['action']}")
+                break
+        
+        # Scan for data type
+        for token in tokens:
+            if token in self.data_types:
+                parsed["data_type"] = self.data_types[token]
+                if debug:
+                    print(f"Debug: Found data_type: {token} → {parsed['data_type']}")
+                break
+        
+        # Scan for special keywords
+        for token in tokens:
+            if token in self.special_keywords:
+                parsed["special"] = self.special_keywords[token]
+                if debug:
+                    print(f"Debug: Found special: {token} → {parsed['special']}")
+                break
+        
+        # Scan for entities using vehicle knowledge
+        if self.vehicle_knowledge:
+            for token in tokens:
+                if token in self.ignore_words:
                     continue
+                
+                # Try to find component
+                if parsed["component"] is None:
+                    component = self.vehicle_knowledge.find_component(token)
+                    if component:
+                        parsed["component"] = component["id"]
+                        parsed["component_info"] = component
+                        if debug:
+                            print(f"Debug: Found component: {token} → {component['id']}")
+                        continue
+                
+                # Try to find app
+                if parsed["app"] is None:
+                    app = self.vehicle_knowledge.find_app(token)
+                    if app:
+                        parsed["app"] = app["id"]
+                        parsed["app_info"] = app
+                        if debug:
+                            print(f"Debug: Found app: {token} → {app['id']}")
+                        continue
+                
+                # Try to find area
+                if parsed["area"] is None:
+                    area = self.vehicle_knowledge.find_area(token)
+                    if area:
+                        parsed["area"] = area["id"]
+                        parsed["area_info"] = area
+                        if debug:
+                            print(f"Debug: Found area: {token} → {area['id']}")
+                        continue
         
         if debug:
-            print("Debug: No pattern matched")
+            print(f"Debug: Parsed keywords: {parsed}")
+        
+        # Determine intent from extracted keywords
+        intent = self._classify_intent(parsed, debug)
+        
+        if debug and intent:
+            print(f"Debug: Classified intent: {intent.type.value}, entities: {intent.entities}")
+        
+        return intent
+    
+    def _classify_intent(self, parsed: Dict, debug: bool = False) -> Optional[Intent]:
+        """
+        Classify intent based on extracted keywords.
+        
+        Args:
+            parsed: Dictionary of extracted keywords
+            debug: Enable debug output
+        
+        Returns:
+            Intent object or None
+        """
+        
+        # Special case: security access
+        if parsed["special"] == "security_access":
+            entities = {}
+            if parsed["component"]:
+                entities["component"] = parsed["component"]
+                if "component_info" in parsed:
+                    entities["component_info"] = parsed["component_info"]
+            return Intent(type=IntentType.SECURITY_ACCESS, entities=entities)
+        
+        # Special case: capabilities
+        if parsed["data_type"] == "capabilities":
+            return Intent(type=IntentType.GET_CAPABILITIES, entities={})
+        
+        # Special case: list apps
+        if parsed["action"] == "list" and parsed["data_type"] == "apps":
+            return Intent(type=IntentType.LIST_APPS, entities={})
+        if parsed["data_type"] == "apps" and not parsed["component"]:
+            return Intent(type=IntentType.LIST_APPS, entities={})
+        
+        # Get logs
+        if parsed["data_type"] == "logs":
+            entities = {}
+            if parsed["component"]:
+                entities["component"] = parsed["component"]
+                if "component_info" in parsed:
+                    entities["component_info"] = parsed["component_info"]
+                    entities["component_type"] = "component"
+            if parsed["area"]:
+                entities["area"] = parsed["area"]
+            return Intent(type=IntentType.GET_LOGS, entities=entities)
+        
+        # Get faults/errors
+        if parsed["data_type"] == "faults":
+            return Intent(type=IntentType.GET_FAULTS, entities={})
+        
+        # Get configurations
+        if parsed["data_type"] == "configurations":
+            entities = {}
+            if parsed["app"]:
+                entities["app"] = parsed["app"]
+                if "app_info" in parsed:
+                    entities["app_info"] = parsed["app_info"]
+            elif parsed["component"]:
+                entities["app"] = parsed["component"]
+            return Intent(type=IntentType.GET_CONFIGURATIONS, entities=entities)
+        
+        # Get operations
+        if parsed["data_type"] == "operations":
+            entities = {}
+            if parsed["component"]:
+                entities["component"] = parsed["component"]
+                if "component_info" in parsed:
+                    entities["component_info"] = parsed["component_info"]
+            return Intent(type=IntentType.GET_OPERATIONS, entities=entities)
+        
+        # Get status
+        if parsed["data_type"] == "status":
+            entities = {}
+            if parsed["component"]:
+                entities["ecu"] = parsed["component"]
+                if "component_info" in parsed:
+                    entities["ecu_info"] = parsed["component_info"]
+            return Intent(type=IntentType.GET_ECU_STATUS, entities=entities)
+        
+        # Get data (sensor data)
+        if parsed["data_type"] == "data":
+            entities = {}
+            if parsed["component"]:
+                entities["component"] = parsed["component"]
+                if "component_info" in parsed:
+                    entities["component_info"] = parsed["component_info"]
+                    entities["component_type"] = "component"
+            return Intent(type=IntentType.READ_SENSOR_DATA, entities=entities)
+        
+        # Get bulk data
+        if parsed["data_type"] == "bulk_data":
+            entities = {}
+            if parsed["app"]:
+                entities["app"] = parsed["app"]
+                if "app_info" in parsed:
+                    entities["app_info"] = parsed["app_info"]
+            return Intent(type=IntentType.READ_SENSOR_DATA, entities=entities)
+        
+        # Fallback: if we have component but no data type, assume data
+        if parsed["component"] and not parsed["data_type"]:
+            entities = {
+                "component": parsed["component"]
+            }
+            if "component_info" in parsed:
+                entities["component_info"] = parsed["component_info"]
+                entities["component_type"] = "component"
+            return Intent(type=IntentType.READ_SENSOR_DATA, entities=entities)
+        
+        # Could not determine intent
+        if debug:
+            print("Debug: Could not classify intent from keywords")
         
         return None
-    
-    def _resolve_entities(self, intent: Intent, original_text: str, debug: bool = False) -> Intent:
-        """
-        Phase 2: Resolve and validate entities using vehicle knowledge.
-        
-        Enhances entities with:
-        - Resolved IDs (e.g., "camera" → "Camera")
-        - Entity type validation
-        - Additional metadata
-        """
-        if not intent.entities:
-            if debug:
-                print("Debug: No entities to resolve")
-            return intent
-        
-        resolved_entities = {}
-        
-        for entity_name, entity_value in intent.entities.items():
-            if debug:
-                print(f"Debug: Resolving entity '{entity_name}': '{entity_value}'")
-            
-            # Try to resolve based on entity type
-            if entity_name in ["component", "ecu"]:
-                resolved = self.vehicle_knowledge.find_component(entity_value)
-                if resolved:
-                    # Keep the original entity name (component/ecu) with resolved ID
-                    resolved_entities[entity_name] = resolved["id"]
-                    resolved_entities[f"{entity_name}_type"] = "component"
-                    resolved_entities[f"{entity_name}_info"] = resolved
-                    if debug:
-                        print(f"Debug: Resolved component: {entity_value} → {resolved['id']}")
-                else:
-                    # Keep original value if not resolved
-                    resolved_entities[entity_name] = entity_value
-                    if debug:
-                        print(f"Debug: Component '{entity_value}' not found in vehicle model")
-            
-            elif entity_name == "app":
-                resolved = self.vehicle_knowledge.find_app(entity_value)
-                if resolved:
-                    resolved_entities[entity_name] = resolved["id"]
-                    resolved_entities[f"{entity_name}_type"] = "app"
-                    resolved_entities[f"{entity_name}_info"] = resolved
-                    if debug:
-                        print(f"Debug: Resolved app: {entity_value} → {resolved['id']}")
-                else:
-                    resolved_entities[entity_name] = entity_value
-                    if debug:
-                        print(f"Debug: App '{entity_value}' not found in vehicle model")
-            
-            elif entity_name == "area":
-                resolved = self.vehicle_knowledge.find_area(entity_value)
-                if resolved:
-                    resolved_entities[entity_name] = resolved["id"]
-                    resolved_entities[f"{entity_name}_type"] = "area"
-                    resolved_entities[f"{entity_name}_info"] = resolved
-                    if debug:
-                        print(f"Debug: Resolved area: {entity_value} → {resolved['id']}")
-                else:
-                    resolved_entities[entity_name] = entity_value
-            
-            else:
-                # Pass through other entity types unchanged
-                resolved_entities[entity_name] = entity_value
-        
-        if debug:
-            print(f"Debug: Resolved entities: {resolved_entities}")
-        
-        intent.entities = resolved_entities
-        return intent
     
     def intent_to_sovd_request(self, intent: Intent) -> SOVDRequest:
         """Convert parsed intent to SOVD HTTP request"""
@@ -308,19 +413,17 @@ class SOVDNLPProcessor:
 
 
 class SOVDAssistant:
-    """Main assistant class that combines NLP processing with SOVD API generation"""
+    """
+    Main assistant class - IDENTICAL API to regex version.
+    Drop-in replacement, no external changes needed.
+    """
     
     def __init__(self, base_uri: str = None, config_file: str = None, vehicle_knowledge: Optional['VehicleKnowledge'] = None):
-        """
-        Initialize SOVD Assistant.
-        
-        Phase 2: Now accepts optional vehicle_knowledge parameter.
-        """
-        # Phase 2: Pass vehicle knowledge to NLP processor
+        """Initialize SOVD Assistant with keyword-based NLP"""
         self.nlp_processor = SOVDNLPProcessor(vehicle_knowledge=vehicle_knowledge)
         self.conversation_log = []
         
-        # Load base_uri from config if available
+        # Load base_uri from config
         if config_file or base_uri is None:
             try:
                 import yaml
@@ -340,16 +443,24 @@ class SOVDAssistant:
             self.base_uri = base_uri
     
     def process_request(self, user_input: str, debug: bool = False) -> Dict:
-        """Process natural language input and return SOVD request details"""
+        """
+        Process natural language input - IDENTICAL API to regex version.
+        
+        Args:
+            user_input: Natural language query
+            debug: Enable debug output
+        
+        Returns:
+            Dict with success, intent, entities, http_request, etc.
+        """
         
         if debug:
             print(f"Debug: Processing input: '{user_input}'")
         
-        # Parse the intent (now with entity resolution)
+        # Parse intent using keyword-based approach
         intent = self.nlp_processor.parse_natural_language(user_input, debug=debug)
         
         if not intent:
-            # Phase 2: Enhanced error message with vehicle-aware suggestions
             suggestions = self._generate_smart_suggestions(user_input)
             
             return {
@@ -358,7 +469,7 @@ class SOVDAssistant:
                 "suggestions": suggestions
             }
         
-        # Phase 2: Validate query if vehicle knowledge available
+        # Validate query
         if self.nlp_processor.vehicle_knowledge:
             is_valid, validation_msg = self._validate_query(intent)
             if not is_valid:
@@ -373,11 +484,9 @@ class SOVDAssistant:
         
         # Convert to SOVD request
         sovd_request = self.nlp_processor.intent_to_sovd_request(intent)
-        
-        # Generate HTTP request string
         http_request = sovd_request.to_http_request(self.base_uri)
         
-        # Log the conversation
+        # Log conversation
         self.conversation_log.append({
             "input": user_input,
             "intent": intent.type.value,
@@ -395,7 +504,7 @@ class SOVDAssistant:
         }
     
     def _validate_query(self, intent: Intent) -> Tuple[bool, str]:
-        """Phase 2: Validate query using vehicle knowledge"""
+        """Validate query using vehicle knowledge"""
         if not self.nlp_processor.vehicle_knowledge:
             return True, ""
         
@@ -405,46 +514,42 @@ class SOVDAssistant:
         )
     
     def _generate_smart_suggestions(self, user_input: str) -> List[str]:
-        """Phase 2: Generate vehicle-aware suggestions"""
+        """Generate vehicle-aware suggestions"""
         suggestions = []
         
-        # Check if vehicle knowledge is available
         if self.nlp_processor.vehicle_knowledge:
             words = user_input.lower().split()
             
-            # Look for words that might be entities
             for word in words:
-                if len(word) > 2:  # Skip short words
+                if len(word) > 2:
                     similar = self.nlp_processor.vehicle_knowledge.suggest_similar(word, limit=2)
                     if similar:
                         suggestions.append(f"Did you mean: {', '.join(similar)}?")
-                        break  # Only suggest for first match
+                        break
         
-        # Add generic examples
         suggestions.extend([
             "List all apps",
             "Show capabilities",
-            "Get V2X sensor data",
-            "Read system logs",
+            "Get V2X logs",
+            "Show Camera data",
             "Check for faults"
         ])
         
-        return suggestions[:5]  # Limit to 5 suggestions
+        return suggestions[:5]
     
     def _generate_alternative_suggestions(self, intent: Intent) -> List[str]:
-        """Phase 2: Suggest alternatives when validation fails"""
+        """Suggest alternatives when validation fails"""
         suggestions = []
         
-        # Suggest based on intent type
         if intent.type == IntentType.GET_LOGS:
-            suggestions.append("Try components that have apps with logs: V2X, GOLDBOX, Switch")
+            suggestions.append("Try components with logs: V2X, GOLDBOX, Switch")
         elif intent.type == IntentType.GET_OPERATIONS:
-            suggestions.append("Try apps with operations: IDSReporter, NIDS_Suricata, CANIDS")
+            suggestions.append("Try apps with operations: IDSReporter, NIDS_Suricata")
         
         return suggestions
     
     def _generate_curl_command(self, request: SOVDRequest) -> str:
-        """Generate curl command for the request"""
+        """Generate curl command"""
         url = f"{self.base_uri}{request.endpoint}"
         if request.params:
             param_str = "&".join([f"{k}={v}" for k, v in request.params.items()])
@@ -459,7 +564,7 @@ class SOVDAssistant:
         return curl_cmd
     
     def _explain_request(self, intent: Intent, request: SOVDRequest) -> str:
-        """Provide human-readable explanation of the generated request"""
+        """Provide human-readable explanation"""
         explanations = {
             IntentType.LIST_APPS: "This will list all available applications in the vehicle",
             IntentType.GET_CAPABILITIES: "This will show what diagnostic capabilities are available",
@@ -478,41 +583,32 @@ class SOVDAssistant:
 if __name__ == "__main__":
     assistant = SOVDAssistant()
     
+    # Test keyword-based parsing with flexible word order
     test_inputs = [
-        "List all apps",
-        "Show me the capabilities",
-        "Get engine sensor data",
-        "Read PowerSteering logs",
-        "Check for faults",
-        "Get Engine ECU status",
-        "Show AdvancedLaneKeeping configurations",
-        "List PowerSteering operations",
-        "I need security access to the engine",
-        "What can this vehicle do?",
-        "Show me RearWindows data",
-        # Phase 2: Test with fuzzy matching
         "get logs from v2x",
-        "show camera data",
+        "v2x logs get",  # Different order
+        "show me the v2x logs please",  # Extra words
+        "get comms v2x logs",  # With area
+        "camera data show",  # Different order
+        "list all apps",
+        "check for faults",
+        "goldbox operations",
     ]
     
-    print("SOVD Natural Language to HTTP Request Processor")
+    print("SOVD Keyword-Based NLP Processor")
     print("=" * 50)
+    print("Word order doesn't matter!")
+    print()
     
     for test_input in test_inputs:
         print(f"\nInput: '{test_input}'")
         result = assistant.process_request(test_input, debug=False)
         
         if result["success"]:
-            print(f"Intent: {result['intent']}")
+            print(f"✅ Intent: {result['intent']}")
             if result["entities"]:
-                print(f"Entities: {result['entities']}")
-            print(f"HTTP Request:\n{result['http_request']}")
-            print(f"Explanation: {result['explanation']}")
+                print(f"   Entities: {result['entities']}")
         else:
-            print(f"Error: {result['message']}")
-            if result.get("suggestions"):
-                print("Suggestions:")
-                for suggestion in result["suggestions"]:
-                    print(f"  - {suggestion}")
+            print(f"❌ Error: {result['message']}")
         
         print("-" * 30)
