@@ -537,74 +537,74 @@ class SOVDNLPProcessor:
         return None
     
     def intent_to_sovd_request(self, intent: Intent) -> SOVDRequest:
-        """Convert parsed intent to SOVD HTTP request"""
+        """Convert parsed intent to SOVD v1 compliant HTTP request"""
         
         if intent.type == IntentType.LIST_APPS:
-            return SOVDRequest(method="GET", endpoint="/apps")
+            return SOVDRequest(method="GET", endpoint="/v1/apps")
         
         elif intent.type == IntentType.LIST_APPS_ON_COMPONENT:
             component = intent.entities.get("component", "Unknown")
-            return SOVDRequest(method="GET", endpoint=f"/components/{component}/related-apps")
+            return SOVDRequest(method="GET", endpoint=f"/v1/components/{component}/related-apps")
         
         elif intent.type == IntentType.LIST_AREAS:
-            return SOVDRequest(method="GET", endpoint="/areas")
+            return SOVDRequest(method="GET", endpoint="/v1/areas")
         
         elif intent.type == IntentType.LIST_COMPONENTS:
-            return SOVDRequest(method="GET", endpoint="/components")
+            return SOVDRequest(method="GET", endpoint="/v1/components")
         
         elif intent.type == IntentType.LIST_COMPONENTS_IN_AREA:
             area = intent.entities.get("area", "Unknown")
-            return SOVDRequest(method="GET", endpoint=f"/areas/{area}/related-components")
+            return SOVDRequest(method="GET", endpoint=f"/v1/areas/{area}/related-components")
         
         elif intent.type == IntentType.GET_CAPABILITIES:
-            return SOVDRequest(method="GET", endpoint="/capabilities")
+            return SOVDRequest(method="GET", endpoint="/v1/capabilities")
         
         elif intent.type == IntentType.READ_SENSOR_DATA:
             component = intent.entities.get("component", "DefaultComponent")
             datatype = intent.entities.get("datatype", "data")
-            endpoint = f"/apps/{component}/data/{datatype}"
+            endpoint = f"/v1/apps/{component}/data/{datatype}"
             params = {"include-schema": "true"}
             return SOVDRequest(method="GET", endpoint=endpoint, params=params)
         
         elif intent.type == IntentType.GET_LOGS:
             component = intent.entities.get("component", "System")
-            endpoint = f"/components/{component}/logs"
+            endpoint = f"/v1/components/{component}/logs"
             return SOVDRequest(method="GET", endpoint=endpoint)
         
         elif intent.type == IntentType.GET_BULK_DATA:
             app = intent.entities.get("app", "DefaultApp")
             bulk_path = intent.entities.get("bulk_data_path", "data")
-            endpoint = f"/apps/{app}/bulk-data/{bulk_path}"
+            endpoint = f"/v1/apps/{app}/bulk-data/{bulk_path}"
             return SOVDRequest(method="GET", endpoint=endpoint)
         
         elif intent.type == IntentType.GET_FAULTS:
-            return SOVDRequest(method="GET", endpoint="/components/diagnostics/faults")
+            return SOVDRequest(method="GET", endpoint="/v1/diagnostics/faults")
         
         elif intent.type == IntentType.GET_ECU_STATUS:
             ecu = intent.entities.get("ecu", "Engine")
-            endpoint = f"/components/{ecu}/status"
+            endpoint = f"/v1/components/{ecu}/status"
             return SOVDRequest(method="GET", endpoint=endpoint)
         
         elif intent.type == IntentType.GET_CONFIGURATIONS:
             app = intent.entities.get("app", "DefaultApp")
-            endpoint = f"/apps/{app}/configurations"
+            endpoint = f"/v1/apps/{app}/configurations"
             return SOVDRequest(method="GET", endpoint=endpoint)
         
         elif intent.type == IntentType.GET_OPERATIONS:
             component = intent.entities.get("component", "DefaultComponent")
-            endpoint = f"/components/{component}/operations"
+            endpoint = f"/v1/components/{component}/operations"
             return SOVDRequest(method="GET", endpoint=endpoint)
         
         elif intent.type == IntentType.SECURITY_ACCESS:
             component = intent.entities.get("component", "")
             if component:
-                endpoint = f"/components/{component}/security/access"
+                endpoint = f"/v1/components/{component}/security/access"
             else:
-                endpoint = "/security/access"
+                endpoint = "/v1/security/access"
             return SOVDRequest(method="POST", endpoint=endpoint)
         
         else:
-            return SOVDRequest(method="GET", endpoint="/capabilities")
+            return SOVDRequest(method="GET", endpoint="/v1/capabilities")
 
 
 class SOVDAssistant:
@@ -834,28 +834,35 @@ class SOVDAssistant:
 if __name__ == "__main__":
     assistant = SOVDAssistant()
     
-    # Test with dynamic keywords
+    # Test SOVD v1 compliant endpoints
     test_inputs = [
         "list all areas",
         "get nids logs",
         "show camera data",
         "list components in adas",
-        "delete v2x logs",  # Should be rejected
+        "get faults",
     ]
     
-    print("SOVD Keyword-Based NLP (Dynamic Keywords from Vehicle Model)")
+    print("SOVD v1 Compliant Endpoint Testing")
     print("=" * 60)
+    print("All endpoints should start with /v1")
+    print()
     
     for test_input in test_inputs:
         print(f"\nInput: '{test_input}'")
         result = assistant.process_request(test_input, debug=False)
         
         if result["success"]:
-            print(f"✅ Intent: {result['intent']}")
-            if result["entities"]:
-                print(f"   Entities: {list(result['entities'].keys())}")
-            print(f"   Endpoint: {result['http_request'].split()[1]}")
+            endpoint = result["http_request"].split()[1].split('?')[0]
+            if endpoint.startswith("https://"):
+                endpoint = endpoint.split("https://")[1].split("/", 1)[1] if "/" in endpoint else endpoint
+            
+            compliant = endpoint.startswith("/v1")
+            status = "✓" if compliant else "✗"
+            
+            print(f"{status} Intent: {result['intent']}")
+            print(f"{status} Endpoint: {endpoint}")
         else:
-            print(f"❌ Error: {result['message']}")
+            print(f"✗ Error: {result['message']}")
         
         print("-" * 40)
